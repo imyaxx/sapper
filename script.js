@@ -356,9 +356,12 @@ function App() {
   const [bestTimes, setBestTimes] = useState(readBestTimes);
   const [streak, setStreak] = useState(readStreak);
   const [burstSeed, setBurstSeed] = useState(0);
+  const [uiScale, setUiScale] = useState(1);
 
   const timerRef = useRef(null);
   const timerValueRef = useRef(0);
+  const scaleFrameRef = useRef(null);
+  const appRef = useRef(null);
 
   const gridRef = useRef(grid);
   const revealedRef = useRef(revealed);
@@ -589,6 +592,59 @@ function App() {
     };
   }, [stopTimer]);
 
+  useEffect(function () {
+    function computeScale() {
+      const node = appRef.current;
+      if (!node) return;
+
+      const contentWidth = node.offsetWidth;
+      const contentHeight = node.offsetHeight;
+      if (!contentWidth || !contentHeight) return;
+
+      const availableWidth = Math.max(1, window.innerWidth - 24);
+      const availableHeight = Math.max(1, window.innerHeight - 24);
+
+      const fitted = Math.min(1, availableWidth / contentWidth, availableHeight / contentHeight);
+      const nextScale = Math.max(0.45, fitted);
+
+      setUiScale(function (prev) {
+        return Math.abs(prev - nextScale) > 0.005 ? nextScale : prev;
+      });
+    }
+
+    function requestScaleCompute() {
+      if (scaleFrameRef.current) {
+        cancelAnimationFrame(scaleFrameRef.current);
+      }
+      scaleFrameRef.current = requestAnimationFrame(function () {
+        scaleFrameRef.current = null;
+        computeScale();
+      });
+    }
+
+    let observer = null;
+    if (typeof ResizeObserver !== 'undefined' && appRef.current) {
+      observer = new ResizeObserver(requestScaleCompute);
+      observer.observe(appRef.current);
+    }
+
+    window.addEventListener('resize', requestScaleCompute);
+    requestScaleCompute();
+
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(requestScaleCompute).catch(function () {});
+    }
+
+    return function () {
+      window.removeEventListener('resize', requestScaleCompute);
+      if (observer) observer.disconnect();
+      if (scaleFrameRef.current) {
+        cancelAnimationFrame(scaleFrameRef.current);
+        scaleFrameRef.current = null;
+      }
+    };
+  }, []);
+
   const isGameOver = gamePhase === 'won' || gamePhase === 'lost';
   const minesLeft = config.mines - flagCount;
   const progressPercent = Math.max(0, Math.min(100, Math.round((revealedCount / safeCells) * 100)));
@@ -601,6 +657,7 @@ function App() {
 
   const boardStyle = {
     '--board-cols': String(config.cols),
+    '--board-rows': String(config.rows),
     '--cell-size-max': getBoardCellSize(config.rows, config.cols) + 'px',
   };
 
@@ -614,10 +671,10 @@ function App() {
       let delay = 0;
       if (isMineCell && clickedMine) {
         const blastDist = Math.abs(row - clickedMine.row) + Math.abs(col - clickedMine.col);
-        delay = blastDist * 48;
+        delay = Math.min(1400, Math.round(Math.pow(blastDist, 1.14) * 42));
       } else if (revealed[row][col] && grid[row][col] !== MINE && revealOrigin) {
         const waveDist = Math.abs(row - revealOrigin.row) + Math.abs(col - revealOrigin.col);
-        delay = waveDist * 24;
+        delay = Math.min(900, Math.round(Math.pow(waveDist, 1.12) * 20));
       }
 
       (function (r, c, mine, source, revealDelay) {
@@ -645,102 +702,109 @@ function App() {
       'main',
       { className: 'app-shell' },
       h(
-        'section',
-        { className: 'app' },
+        'div',
+        {
+          className: 'app-scale',
+          style: { transform: 'scale(' + uiScale + ')' },
+        },
         h(
-          'header',
-          { className: 'hero' },
+          'section',
+          { className: 'app', ref: appRef },
+          h(
+            'header',
+            { className: 'hero' },
+            h(
+              'div',
+              { className: 'brand' },
+              h('div', { className: 'eyebrow' }, 'TACTICAL MINESWEEPER'),
+              h('h1', { className: 'title' }, 'Сапёр'),
+              h('p', { className: 'subtitle' }, DIFFICULTY_PRESETS[difficulty].hint)
+            ),
+            h('div', { className: 'meta-pill' }, config.rows + '×' + config.cols + ' • ' + config.mines + ' мин')
+          ),
+
           h(
             'div',
-            { className: 'brand' },
-            h('div', { className: 'eyebrow' }, 'TACTICAL MINESWEEPER'),
-            h('h1', { className: 'title' }, 'Сапёр'),
-            h('p', { className: 'subtitle' }, DIFFICULTY_PRESETS[difficulty].hint)
-          ),
-          h('div', { className: 'meta-pill' }, config.rows + '×' + config.cols + ' • ' + config.mines + ' мин')
-        ),
-
-        h(
-          'div',
-          { className: 'difficulty-switch' },
-          Object.keys(DIFFICULTY_PRESETS).map(function (key) {
-            const preset = DIFFICULTY_PRESETS[key];
-            return h(
+            { className: 'difficulty-switch' },
+            Object.keys(DIFFICULTY_PRESETS).map(function (key) {
+              const preset = DIFFICULTY_PRESETS[key];
+              return h(
+                'button',
+                {
+                  key: key,
+                  type: 'button',
+                  className: 'difficulty-btn' + (difficulty === key ? ' active' : ''),
+                  onClick: function () { handleDifficultyChange(key); },
+                },
+                preset.label
+              );
+            }),
+            h(
               'button',
               {
-                key: key,
                 type: 'button',
-                className: 'difficulty-btn' + (difficulty === key ? ' active' : ''),
-                onClick: function () { handleDifficultyChange(key); },
+                className: 'mode-toggle' + (inputMode === 'flag' ? ' active' : ''),
+                onClick: function () {
+                  setInputMode(function (prev) {
+                    return prev === 'reveal' ? 'flag' : 'reveal';
+                  });
+                },
               },
-              preset.label
-            );
-          }),
-          h(
-            'button',
-            {
-              type: 'button',
-              className: 'mode-toggle' + (inputMode === 'flag' ? ' active' : ''),
-              onClick: function () {
-                setInputMode(function (prev) {
-                  return prev === 'reveal' ? 'flag' : 'reveal';
-                });
-              },
-            },
-            inputMode === 'reveal' ? 'Режим: Открытие' : 'Режим: Флажки'
+              inputMode === 'reveal' ? 'Режим: Открытие' : 'Режим: Флажки'
+            ),
+            h('button', { type: 'button', className: 'restart-button', onClick: resetGame }, 'Перезапуск')
           ),
-          h('button', { type: 'button', className: 'restart-button', onClick: resetGame }, 'Перезапуск')
-        ),
 
-        h(
-          'div',
-          { className: 'control-grid' },
           h(
             'div',
-            { className: 'stat-card' },
-            h('span', { className: 'stat-label' }, 'Мин осталось'),
-            h('strong', { className: 'stat-value' }, String(minesLeft).padStart(2, '0'))
+            { className: 'control-grid' },
+            h(
+              'div',
+              { className: 'stat-card' },
+              h('span', { className: 'stat-label' }, 'Мин осталось'),
+              h('strong', { className: 'stat-value' }, String(minesLeft).padStart(2, '0'))
+            ),
+            h(
+              'div',
+              { className: 'stat-card' },
+              h('span', { className: 'stat-label' }, 'Таймер'),
+              h('strong', { className: 'stat-value' }, formatTime(timer))
+            ),
+            h(
+              'div',
+              { className: 'stat-card' },
+              h('span', { className: 'stat-label' }, 'Серия побед'),
+              h('strong', { className: 'stat-value' }, streak)
+            ),
+            h(
+              'div',
+              { className: 'stat-card' },
+              h('span', { className: 'stat-label' }, 'Рекорд'),
+              h('strong', { className: 'stat-value' }, bestCurrent ? formatTime(bestCurrent) : '—')
+            )
           ),
+
+          h('p', { className: 'status-line status-' + gamePhase }, statusText),
+
           h(
             'div',
-            { className: 'stat-card' },
-            h('span', { className: 'stat-label' }, 'Таймер'),
-            h('strong', { className: 'stat-value' }, formatTime(timer))
+            { className: 'progress-track', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': progressPercent },
+            h('div', { className: 'progress-fill', style: { width: progressPercent + '%' } })
           ),
+
           h(
             'div',
-            { className: 'stat-card' },
-            h('span', { className: 'stat-label' }, 'Серия побед'),
-            h('strong', { className: 'stat-value' }, streak)
+            { className: 'board-shell' },
+            h(WinBurst, { seed: burstSeed }),
+            h(
+              'div',
+              { className: 'board', style: boardStyle },
+              cells
+            )
           ),
-          h(
-            'div',
-            { className: 'stat-card' },
-            h('span', { className: 'stat-label' }, 'Рекорд'),
-            h('strong', { className: 'stat-value' }, bestCurrent ? formatTime(bestCurrent) : '—')
-          )
-        ),
 
-        h('p', { className: 'status-line status-' + gamePhase }, statusText),
-
-        h(
-          'div',
-          { className: 'progress-track', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': progressPercent },
-          h('div', { className: 'progress-fill', style: { width: progressPercent + '%' } })
-        ),
-
-        h(
-          'div',
-          { className: 'board-shell' },
-          h(WinBurst, { seed: burstSeed }),
-          h(
-            'div',
-            { className: 'board', style: boardStyle },
-            cells
-          )
-        ),
-
-        h('p', { className: 'hint-line' }, 'ЛКМ: открыть • ПКМ: флажок • F: переключить режим • R: рестарт • 1/2/3: уровень')
+          h('p', { className: 'hint-line' }, 'ЛКМ: открыть • ПКМ: флажок • F: переключить режим • R: рестарт • 1/2/3: уровень')
+        )
       )
     ),
 
